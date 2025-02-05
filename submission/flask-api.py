@@ -16,6 +16,7 @@ CORS(app)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, 'models')
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
+//A MODIFIER ICI
 MODEL_PATH = os.path.join(MODEL_DIR, 'best_model.pth')
 
 # Création des dossiers nécessaires
