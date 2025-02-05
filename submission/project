@@ -1,0 +1,8 @@
+projet/
+├── traineval.py          # Script principal d'entraînement/évaluation
+├── attribute_predictor.py # Définition du modèle
+├── att_dataset.py        # Gestion des données
+├── requirements.txt      # Dépendances
+├── data/
+│   └── PBC/             # Dossier pour les images
+└── pbc_attr_v1_*.csv    # Fichiers de données (train/val/test)
