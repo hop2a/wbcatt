@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 from torchvision import transforms, models
 from PIL import Image
-import numpy as np
 from attribute_predictor import AttributePredictor
 
 app = Flask(__name__)
@@ -16,7 +15,6 @@ CORS(app)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_DIR = os.path.join(BASE_DIR, 'models')
 UPLOAD_FOLDER = os.path.join(BASE_DIR, 'uploads')
-//A MODIFIER ICI
 MODEL_PATH = os.path.join(MODEL_DIR, 'best_model.pth')
 
 # Création des dossiers nécessaires
@@ -25,13 +23,12 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 # Configuration Flask
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg'}
 
 # Configuration du modèle
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 model = None
 
-# Liste des attributs à prédire
 att_names = [
     "cell_size",
     "cell_shape",
@@ -46,57 +43,37 @@ att_names = [
     "granularity",
 ]
 
-# Dictionnaire de décodage des attributs (à adapter selon votre modèle)
-attribute_decoders = {
-    "cell_size": {0: "small", 1: "medium", 2: "large"},
-    "cell_shape": {0: "round", 1: "oval", 2: "irregular"},
-    "nucleus_shape": {0: "round", 1: "oval", 2: "irregular"},
-    # Ajoutez les autres attributs selon votre modèle
-}
-
 def get_image_encoder(name="resnet50", pretrained=True):
-    """
-    Crée et configure l'encodeur d'images
-    """
+    """Configure l'encodeur d'images"""
     weights = "DEFAULT" if pretrained else None
     model = getattr(models, name)(weights=weights)
     
     if name.startswith("resnet"):
         model.fc = nn.Identity()
-        output_dim = 2048  # Pour ResNet50
+        output_dim = 2048
     elif name.startswith("vgg"):
         model.classifier[6] = nn.Identity()
-        output_dim = 4096  # Pour VGG16
-    elif name.startswith("convnext"):
-        model.classifier[-1] = nn.Identity()
-        output_dim = 768  # Pour ConvNext Tiny
+        output_dim = 4096
     else:
         raise ValueError(f"Encodeur non supporté: {name}")
     
     return model, output_dim
 
 def load_model():
-    """
-    Charge le modèle s'il n'est pas déjà en mémoire
-    """
+    """Charge le modèle"""
     global model
     if model is None:
         try:
             print("Chargement du modèle...")
             
-            # Vérification de l'existence du fichier
-            if not os.path.exists(MODEL_PATH):
-                raise FileNotFoundError(f"Modèle non trouvé: {MODEL_PATH}")
-            
             # Chargement du checkpoint
             checkpoint = torch.load(MODEL_PATH, map_location=device)
             
-            # Création de l'encodeur
+            # Configuration de l'encodeur
             image_encoder, output_dim = get_image_encoder("resnet50")
             
-            # Création du modèle
-            # Vous devrez ajuster ces valeurs selon votre modèle
-            attribute_sizes = [3, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]  # exemple
+            # Création du modèle avec les dimensions appropriées
+            attribute_sizes = [3] * len(att_names)  # 3 classes pour chaque attribut
             model = AttributePredictor(attribute_sizes, output_dim, image_encoder)
             
             # Chargement des poids
@@ -110,16 +87,8 @@ def load_model():
             print(f"Erreur lors du chargement du modèle: {str(e)}")
             raise
 
-def allowed_file(filename):
-    """
-    Vérifie si le type de fichier est autorisé
-    """
-    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
-
 def process_image(image_path):
-    """
-    Prétraite l'image pour le modèle
-    """
+    """Prétraite l'image"""
     transform = transforms.Compose([
         transforms.Resize(256),
         transforms.CenterCrop(224),
@@ -130,32 +99,22 @@ def process_image(image_path):
         )
     ])
     
-    try:
-        image = Image.open(image_path).convert('RGB')
-        image_tensor = transform(image).unsqueeze(0)
-        return image_tensor
-    except Exception as e:
-        raise ValueError(f"Erreur lors du traitement de l'image: {str(e)}")
+    image = Image.open(image_path).convert('RGB')
+    image_tensor = transform(image).unsqueeze(0)
+    return image_tensor
 
 def decode_predictions(outputs):
-    """
-    Décode les sorties du modèle en prédictions intelligibles
-    """
+    """Décode les prédictions"""
     predictions = {}
     
-    for i, output in enumerate(outputs):
-        probs = torch.softmax(output, dim=1)
+    # Décodage pour chaque attribut
+    for i, attribute in enumerate(att_names):
+        probs = torch.softmax(outputs[i], dim=1)
         pred_class = torch.argmax(probs, dim=1).item()
         confidence = probs[0][pred_class].item()
         
-        attribute = att_names[i]
-        decoded_value = "Unknown"
-        if attribute in attribute_decoders:
-            decoded_value = attribute_decoders[attribute].get(pred_class, "Unknown")
-        
         predictions[attribute] = {
-            'class': decoded_value,
-            'raw_class': pred_class,
+            'class': pred_class,
             'confidence': float(confidence)
         }
     
@@ -163,9 +122,6 @@ def decode_predictions(outputs):
 
 @app.route('/health', methods=['GET'])
 def health_check():
-    """
-    Point de terminaison pour vérifier que l'API fonctionne
-    """
     return jsonify({
         'status': 'healthy',
         'model_loaded': model is not None,
@@ -174,75 +130,52 @@ def health_check():
 
 @app.route('/analyze', methods=['POST'])
 def analyze_image():
-    """
-    Point de terminaison principal pour l'analyse d'images
-    """
-    # Vérification du fichier
     if 'file' not in request.files:
         return jsonify({'error': 'Aucun fichier envoyé'}), 400
     
     file = request.files['file']
     if file.filename == '':
         return jsonify({'error': 'Aucun fichier sélectionné'}), 400
-    
-    if not file or not allowed_file(file.filename):
-        return jsonify({'error': 'Type de fichier non autorisé'}), 400
-    
-    try:
-        # Sauvegarde temporaire du fichier
-        filename = secure_filename(file.filename)
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-        file.save(filepath)
         
-        # Chargement du modèle si nécessaire
-        load_model()
-        
-        # Prétraitement de l'image
-        image_tensor = process_image(filepath)
-        image_tensor = image_tensor.to(device)
-        
-        # Prédiction
-        with torch.no_grad():
-            outputs = model(image_tensor)
-        
-        # Décodage des prédictions
-        predictions = decode_predictions(outputs)
-        
-        # Nettoyage
-        os.remove(filepath)
-        
-        return jsonify({
-            'status': 'success',
-            'filename': filename,
-            'predictions': predictions
-        })
-        
-    except Exception as e:
-        # Nettoyage en cas d'erreur
-        if os.path.exists(filepath):
+    if file and file.filename.lower().endswith(tuple(ALLOWED_EXTENSIONS)):
+        try:
+            # Sauvegarde temporaire du fichier
+            filename = secure_filename(file.filename)
+            filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            file.save(filepath)
+            
+            # Chargement du modèle si nécessaire
+            load_model()
+            
+            # Prétraitement et prédiction
+            image_tensor = process_image(filepath)
+            image_tensor = image_tensor.to(device)
+            
+            with torch.no_grad():
+                outputs = model(image_tensor)
+            
+            # Décodage des prédictions
+            predictions = decode_predictions(outputs)
+            
+            # Nettoyage
             os.remove(filepath)
-        
-        return jsonify({
-            'status': 'error',
-            'error': str(e)
-        }), 500
-
-@app.errorhandler(Exception)
-def handle_exception(e):
-    """
-    Gestionnaire global d'erreurs
-    """
-    return jsonify({
-        'status': 'error',
-        'error': str(e)
-    }), 500
+            
+            return jsonify({
+                'status': 'success',
+                'predictions': predictions
+            })
+            
+        except Exception as e:
+            if os.path.exists(filepath):
+                os.remove(filepath)
+            return jsonify({
+                'status': 'error',
+                'error': str(e)
+            }), 500
+            
+    return jsonify({'error': 'Type de fichier non autorisé'}), 400
 
 if __name__ == '__main__':
-    # Configuration du logger
-    import logging
-    logging.basicConfig(level=logging.INFO)
-    
-    # Démarrage du serveur
     print(f"Démarrage du serveur sur le port 5000...")
     print(f"Utilisation du dispositif: {device}")
     app.run(debug=True, host='0.0.0.0', port=5000)
